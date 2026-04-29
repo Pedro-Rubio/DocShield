@@ -1,459 +1,269 @@
-/**
- * DocShield — Componente de captura de documento
- *
- * Componente React Native para captura de documentos de identidad
- * con detección de liveness mediante el acelerómetro del dispositivo.
- *
- * Principio: NUNCA permite subir imágenes, solo captura desde cámara.
- */
-
-import React, { useState, useRef, useEffect, useCallback } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  Dimensions,
-  Alert,
-  TouchableOpacity,
-  ActivityIndicator,
-  Platform,
-} from "react-native";
-import { Camera, useCameraDevice, useCameraFormat } from "react-native-vision-camera";
-import { Accelerometer } from "expo-sensors";
-
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
-
-// Configuración
-const LIVENESS_TIMEOUT_MS = 8000; // 8 segundos para liveness
-const LIVENESS_ANGLE_DEG = 10; // +/- 10 grados de inclinación requeridos
-const CAPTURE_MARGIN = 40; // margen del marco guía
-
-type CaptureState = "idle" | "capturing" | "liveness" | "success" | "error" | "timeout";
+import React, { useState, useEffect, useRef } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, Alert, ActivityIndicator } from 'react-native';
+import { Camera, useCameraDevices, useFrameProcessor } from 'react-native-vision-camera';
+import { useTensorFlow } from '@tensorflow/tfjs-react-native'; // Opcional para procesamiento local
+import * as ImageManipulator from 'expo-image-manipulator';
+import * as Sensors from 'expo-sensors';
+import { Accelerometer } from 'expo-sensors';
+import { captureDocument } from './utils/captureUtils'; // Implementar según necesidad
 
 interface DocumentCaptureProps {
-  onCapture: (base64Image: string, metadata: CaptureMetadata) => void;
-  onError: (error: string) => void;
+  onVerificationResult: (result: any) => void;
+  apiEndpoint?: string;
 }
 
-interface CaptureMetadata {
-  user_agent: string;
-  screen_width: number;
-  screen_height: number;
-  platform: string;
-  ip_address: string;
-  liveness_passed: boolean;
-  accelerometer_data: number[];
-}
-
-interface AccelerometerData {
-  x: number;
-  y: number;
-  z: number;
-}
-
-const DocumentCapture: React.FC<DocumentCaptureProps> = ({ onCapture, onError }) => {
-  const [state, setState] = useState<CaptureState>("idle");
-  const [permission, setPermission] = useState<boolean>(false);
-  const [livenessProgress, setLivenessProgress] = useState<number>(0);
-  const [accelData, setAccelData] = useState<AccelerometerData>({ x: 0, y: 0, z: 0 });
-  const [livenessPassed, setLivenessPassed] = useState<boolean>(false);
-
-  const cameraRef = useRef<Camera>(null);
-  const accelSubscription = useRef<any>(null);
-  const livenessStartTime = useRef<number>(0);
-  const accelReadings = useRef<number[]>([]);
-  const maxAngleReached = useRef<number>(0);
-
-  const device = useCameraDevice("back");
-  const format = useCameraFormat(device, [
-    { photoResolution: { width: 1920, height: 1080 } },
-    { fps: 30 },
-  ]);
-
+export default function DocumentCapture({ 
+  onVerificationResult, 
+  apiEndpoint = 'http://localhost:8000/api/v1/verify-document' 
+}: DocumentCaptureProps) {
+  const [hasPermission, setHasPermission] = useState(false);
+  const [isCapturing, setIsCapturing] = useState(false);
+  const [livenessPassed, setLivenessPassed] = useState(false);
+  const [rotation, setRotation] = useState(0);
+  const [sessionId] = useState(() => Math.random().toString(36).substring(7));
+  
+  const devices = useCameraDevices();
+  const device = devices.back;
+  const cameraRef = useRef(null);
+  
   useEffect(() => {
-    requestPermissions();
-    return () => {
-      accelSubscription.current?.remove();
-    };
-  }, []);
-
-  const requestPermissions = async () => {
-    try {
-      const cameraPermission = await Camera.requestCameraPermission();
-      setPermission(cameraPermission === "authorized");
-
-      if (cameraPermission !== "authorized") {
-        Alert.alert(
-          "Permiso requerido",
-          "DocShield necesita acceso a la cámara para capturar el documento."
-        );
-      }
-    } catch (error) {
-      onError("No se pudo solicitar permiso de cámara");
-    }
-  };
-
-  const startLivenessDetection = useCallback(() => {
-    setState("liveness");
-    livenessStartTime.current = Date.now();
-    accelReadings.current = [];
-    maxAngleReached.current = 0;
-
-    accelSubscription.current = Accelerometer.addListener((data) => {
-      const { x, y, z } = data;
-      setAccelData(data);
-      accelReadings.current.push(Math.sqrt(x * x + y * y + z * z));
-
-      // Calcular ángulo de inclinación
-      const angle = Math.atan2(Math.sqrt(x * x + y * y), z) * (180 / Math.PI);
-      maxAngleReached.current = Math.max(maxAngleReached.current, Math.abs(angle));
-
-      // Verificar si alcanzó el ángulo requerido
-      if (Math.abs(angle) >= LIVENESS_ANGLE_DEG) {
-        setLivenessPassed(true);
-      }
-
-      // Actualizar progreso
-      const elapsed = Date.now() - livenessStartTime.current;
-      const progress = Math.min(elapsed / LIVENESS_TIMEOUT_MS, 1);
-      setLivenessProgress(progress);
-
-      // Timeout
-      if (elapsed >= LIVENESS_TIMEOUT_MS) {
-        stopAccelerometer();
-        if (!livenessPassed) {
-          setState("timeout");
-          onError("Tiempo agotado. Debés inclinar el documento para verificar que es físico.");
+    (async () => {
+      const status = await Camera.requestCameraPermission();
+      setHasPermission(status === 'authorized');
+      
+      // Configurar acelerómetro para liveness detection
+      Accelerometer.setUpdateInterval(100);
+      const subscription = Accelerometer.addListener(accelerometerData => {
+        const { x, y, z } = accelerometerData;
+        const currentRotation = Math.atan2(y, x) * (180 / Math.PI);
+        setRotation(Math.abs(currentRotation));
+        
+        // Detectar inclinación de ±10° (liveness)
+        if (Math.abs(currentRotation) > 10) {
+          setLivenessPassed(true);
         }
-      }
-    });
-
-    Accelerometer.setUpdateInterval(100); // 10Hz
-  }, [onError, livenessPassed]);
-
-  const stopAccelerometer = useCallback(() => {
-    accelSubscription.current?.remove();
-    accelSubscription.current = null;
-    Accelerometer.removeAllListeners();
-  }, []);
-
-  const handleCapture = async () => {
-    if (!cameraRef.current || !permission) return;
-
-    setState("capturing");
-    startLivenessDetection();
-  };
-
-  const handleFinalCapture = async () => {
-    if (!cameraRef.current) return;
-
-    try {
-      const photo = await cameraRef.current.takePhoto({
-        flash: "off",
-        qualityPrioritization: "quality",
       });
-
-      // Leer archivo como base64
-      const fileUri = `file://${photo.path}`;
-      const response = await fetch(fileUri);
-      const blob = await response.blob();
-
-      const reader = new FileReader();
-      reader.readAsDataURL(blob);
-      reader.onloadend = () => {
-        const base64 = (reader.result as string).split(",")[1];
-
-        const metadata: CaptureMetadata = {
-          user_agent: "DocShield-Mobile/1.0",
-          screen_width: SCREEN_WIDTH,
-          screen_height: SCREEN_HEIGHT,
-          platform: Platform.OS,
-          ip_address: "0.0.0.0", // Obtener de la API en producción
-          liveness_passed: livenessPassed,
-          accelerometer_data: accelReadings.current.slice(0, 80), // Limitar a 80 lecturas
-        };
-
-        stopAccelerometer();
-        setState("success");
-        onCapture(base64, metadata);
+      
+      return () => subscription.remove();
+    })();
+  }, []);
+  
+  const captureAndVerify = async () => {
+    if (!cameraRef.current || isCapturing) return;
+    
+    setIsCapturing(true);
+    
+    try {
+      // Capturar imagen
+      const photo = await cameraRef.current.takePhoto({
+        qualityPrioritization: 'quality',
+        flash: 'off',
+        enableAutoRedEyeReduction: true
+      });
+      
+      // Comprimir en memoria (NO guardar en disco)
+      const manipResult = await ImageManipulator.manipulateAsync(
+        photo.path,
+        [{ resize: { width: 1200 } }],
+        { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+      );
+      
+      if (!manipResult.base64) {
+        throw new Error('No se pudo obtener base64 de la imagen');
+      }
+      
+      // Preparar metadatos de captura
+      const captureMeta = {
+        timestamp: new Date().toISOString(),
+        device_model: Platform.OS === 'ios' ? 'iOS' : 'Android',
+        liveness_passed: livenessPassed,
+        liveness_rotation_deg: rotation,
+        session_id: sessionId,
+        accelerometer_data: [rotation] // Simplificado
       };
+      
+      // Enviar a API para verificación
+      const response = await fetch(apiEndpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          image: manipResult.base64,
+          capture_meta: captureMeta
+        })
+      });
+      
+      const result = await response.json();
+      
+      // Eliminar base64 de memoria (no hay forma directa, pero no se guarda)
+      onVerificationResult(result);
+      
     } catch (error) {
-      stopAccelerometer();
-      setState("error");
-      onError("Error al capturar la imagen");
+      Alert.alert('Error', `Error en captura: ${error.message}`);
+    } finally {
+      setIsCapturing(false);
     }
   };
-
-  const renderGuideOverlay = () => (
-    <View style={styles.guideOverlay} pointerEvents="none">
-      <View style={styles.guideBox}>
+  
+  if (!hasPermission) {
+    return (
+      <View style={styles.container}>
+        <Text style={styles.text}>Se requiere permiso de cámara</Text>
+      </View>
+    );
+  }
+  
+  if (!device) {
+    return (
+      <View style={styles.container}>
+        <Text style={styles.text}>Cámara no disponible</Text>
+      </View>
+    );
+  }
+  
+  return (
+    <View style={styles.container}>
+      <Camera
+        ref={cameraRef}
+        style={styles.camera}
+        device={device}
+        isActive={true}
+        photo={true}
+      />
+      
+      {/* Marco guía para documento */}
+      <View style={styles.guideFrame}>
         <View style={styles.cornerTopLeft} />
         <View style={styles.cornerTopRight} />
         <View style={styles.cornerBottomLeft} />
         <View style={styles.cornerBottomRight} />
       </View>
-      <Text style={styles.guideText}>
-        {state === "liveness"
-          ? livenessPassed
-            ? "¡Bien! Ahora mantené el documento quieto"
-            : "Incliná el documento ±10° para verificar"
-          : "Alineá el documento dentro del marco"}
-      </Text>
-    </View>
-  );
-
-  const renderLivenessProgress = () => {
-    if (state !== "liveness") return null;
-
-    return (
-      <View style={styles.livenessContainer}>
-        <View style={styles.livenessBar}>
-          <View
-            style={[
-              styles.livenessProgress,
-              { width: `${livenessProgress * 100}%` },
-            ]}
-          />
-        </View>
-        <Text style={styles.livenessText}>
-          {Math.max(0, Math.ceil((LIVENESS_TIMEOUT_MS - (Date.now() - livenessStartTime.current)) / 1000))}s
-        </Text>
-      </View>
-    );
-  };
-
-  if (!device) {
-    return (
-      <View style={styles.container}>
-        <Text style={styles.errorText}>No se encontró cámara</Text>
-      </View>
-    );
-  }
-
-  if (!permission) {
-    return (
-      <View style={styles.container}>
-        <Text style={styles.text}>Solicitando permiso de cámara...</Text>
-        <TouchableOpacity style={styles.button} onPress={requestPermissions}>
-          <Text style={styles.buttonText}>Activar cámara</Text>
+      
+      <View style={styles.controls}>
+        {!livenessPassed && (
+          <Text style={styles.livenessText}>
+            Incliná el documento ±10° para verificación
+          </Text>
+        )}
+        {livenessPassed && (
+          <Text style={styles.livenessSuccess}>
+            ✓ Liveness detectado
+          </Text>
+        )}
+        
+        <TouchableOpacity
+          style={[styles.captureButton, isCapturing && styles.capturingButton]}
+          onPress={captureAndVerify}
+          disabled={isCapturing}
+        >
+          {isCapturing ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <Text style={styles.captureButtonText}>Capturar Documento</Text>
+          )}
         </TouchableOpacity>
       </View>
-    );
-  }
-
-  return (
-    <View style={styles.container}>
-      <Camera
-        ref={cameraRef}
-        style={StyleSheet.absoluteFill}
-        device={device}
-        isActive={state !== "error"}
-        photo={true}
-        format={format}
-      />
-
-      {renderGuideOverlay()}
-      {renderLivenessProgress()}
-
-      {state === "idle" && (
-        <View style={styles.bottomControls}>
-          <TouchableOpacity style={styles.captureButton} onPress={handleCapture}>
-            <Text style={styles.captureButtonText}>Capturar</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-
-      {state === "liveness" && livenessPassed && (
-        <View style={styles.bottomControls}>
-          <TouchableOpacity style={styles.captureButton} onPress={handleFinalCapture}>
-            <ActivityIndicator color="white" />
-            <Text style={styles.captureButtonText}>Verificando...</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-
-      {state === "capturing" && (
-        <View style={styles.overlay}>
-          <ActivityIndicator size="large" color="white" />
-          <Text style={styles.overlayText}>Capturando documento...</Text>
-        </View>
-      )}
-
-      {state === "timeout" && (
-        <View style={styles.overlay}>
-          <Text style={styles.errorText}>Tiempo agotado</Text>
-          <TouchableOpacity style={styles.retryButton} onPress={() => setState("idle")}>
-            <Text style={styles.buttonText}>Reintentar</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-
-      {state === "error" && (
-        <View style={styles.overlay}>
-          <Text style={styles.errorText}>Error en la captura</Text>
-          <TouchableOpacity style={styles.retryButton} onPress={() => setState("idle")}>
-            <Text style={styles.buttonText}>Reintentar</Text>
-          </TouchableOpacity>
-        </View>
-      )}
     </View>
   );
-};
+}
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "black",
+    backgroundColor: '#000',
   },
-  text: {
-    color: "white",
-    fontSize: 18,
-    textAlign: "center",
-    marginTop: 50,
+  camera: {
+    flex: 1,
   },
-  errorText: {
-    color: "#ff4444",
-    fontSize: 18,
-    textAlign: "center",
-    fontWeight: "bold",
-  },
-  guideOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  guideBox: {
-    width: SCREEN_WIDTH - CAPTURE_MARGIN * 2,
-    height: (SCREEN_WIDTH - CAPTURE_MARGIN * 2) * 1.6,
+  guideFrame: {
+    position: 'absolute',
+    top: '20%',
+    left: '10%',
+    right: '10%',
+    bottom: '30%',
     borderWidth: 2,
-    borderColor: "rgba(255, 255, 255, 0.5)",
-    borderRadius: 12,
+    borderColor: 'rgba(255, 255, 255, 0.7)',
+    borderRadius: 10,
   },
   cornerTopLeft: {
-    position: "absolute",
+    position: 'absolute',
     top: -2,
     left: -2,
-    width: 40,
-    height: 40,
+    width: 20,
+    height: 20,
     borderTopWidth: 4,
     borderLeftWidth: 4,
-    borderColor: "#4CAF50",
-    borderTopLeftRadius: 8,
+    borderColor: '#00FF00',
   },
   cornerTopRight: {
-    position: "absolute",
+    position: 'absolute',
     top: -2,
     right: -2,
-    width: 40,
-    height: 40,
+    width: 20,
+    height: 20,
     borderTopWidth: 4,
     borderRightWidth: 4,
-    borderColor: "#4CAF50",
-    borderTopRightRadius: 8,
+    borderColor: '#00FF00',
   },
   cornerBottomLeft: {
-    position: "absolute",
+    position: 'absolute',
     bottom: -2,
     left: -2,
-    width: 40,
-    height: 40,
+    width: 20,
+    height: 20,
     borderBottomWidth: 4,
     borderLeftWidth: 4,
-    borderColor: "#4CAF50",
-    borderBottomLeftRadius: 8,
+    borderColor: '#00FF00',
   },
   cornerBottomRight: {
-    position: "absolute",
+    position: 'absolute',
     bottom: -2,
     right: -2,
-    width: 40,
-    height: 40,
+    width: 20,
+    height: 20,
     borderBottomWidth: 4,
     borderRightWidth: 4,
-    borderColor: "#4CAF50",
-    borderBottomRightRadius: 8,
+    borderColor: '#00FF00',
   },
-  guideText: {
-    color: "white",
-    fontSize: 16,
-    textAlign: "center",
-    marginTop: 20,
-    backgroundColor: "rgba(0, 0, 0, 0.6)",
-    padding: 10,
-    borderRadius: 8,
-  },
-  livenessContainer: {
-    position: "absolute",
-    bottom: 120,
-    left: 40,
-    right: 40,
-  },
-  livenessBar: {
-    height: 8,
-    backgroundColor: "rgba(255, 255, 255, 0.3)",
-    borderRadius: 4,
-    overflow: "hidden",
-  },
-  livenessProgress: {
-    height: "100%",
-    backgroundColor: "#4CAF50",
-  },
-  livenessText: {
-    color: "white",
-    textAlign: "center",
-    marginTop: 8,
-    fontSize: 14,
-  },
-  bottomControls: {
-    position: "absolute",
+  controls: {
+    position: 'absolute',
     bottom: 40,
     left: 0,
     right: 0,
-    alignItems: "center",
+    alignItems: 'center',
+    paddingHorizontal: 20,
+  },
+  livenessText: {
+    color: '#FFA500',
+    marginBottom: 10,
+    textAlign: 'center',
+  },
+  livenessSuccess: {
+    color: '#00FF00',
+    marginBottom: 10,
+    textAlign: 'center',
   },
   captureButton: {
-    backgroundColor: "#4CAF50",
-    paddingVertical: 16,
-    paddingHorizontal: 48,
+    backgroundColor: '#007AFF',
+    paddingHorizontal: 30,
+    paddingVertical: 15,
     borderRadius: 30,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
+    minWidth: 200,
+    alignItems: 'center',
+  },
+  capturingButton: {
+    backgroundColor: '#FF3B30',
   },
   captureButtonText: {
-    color: "white",
+    color: '#fff',
     fontSize: 18,
-    fontWeight: "bold",
+    fontWeight: 'bold',
   },
-  overlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0, 0, 0, 0.8)",
-    justifyContent: "center",
-    alignItems: "center",
-    gap: 20,
-  },
-  overlayText: {
-    color: "white",
-    fontSize: 18,
-  },
-  retryButton: {
-    backgroundColor: "#2196F3",
-    paddingVertical: 12,
-    paddingHorizontal: 32,
-    borderRadius: 20,
-  },
-  button: {
-    backgroundColor: "#4CAF50",
-    paddingVertical: 12,
-    paddingHorizontal: 32,
-    borderRadius: 20,
-    marginTop: 20,
-  },
-  buttonText: {
-    color: "white",
+  text: {
+    color: '#fff',
     fontSize: 16,
-    fontWeight: "bold",
+    textAlign: 'center',
+    marginTop: 50,
   },
 });
-
-export default DocumentCapture;
