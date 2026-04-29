@@ -1,228 +1,151 @@
-"""
-Módulo de evaluación de modelos de detección de fraude.
-
-Genera métricas detalladas y visualizaciones para evaluar
-el rendimiento del modelo: curvas ROC, PR, matriz de confusión.
-"""
-
-import logging
-from pathlib import Path
-from typing import Optional
-
-import joblib
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
+import numpy as np
+import joblib
+import matplotlib.pyplot as plt
+from typing import Dict, Any, Tuple
 from sklearn.metrics import (
-    average_precision_score,
-    confusion_matrix,
-    precision_recall_curve,
-    precision_score,
-    recall_score,
-    roc_auc_score,
-    roc_curve,
+    roc_curve, precision_recall_curve, auc,
+    classification_report, confusion_matrix
 )
-from sklearn.model_selection import StratifiedKFold
+import os
 
-logger = logging.getLogger(__name__)
-
-MODELS_DIR = Path(__file__).resolve().parent.parent.parent / "models"
-GOLD_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "gold"
-
-FEATURE_COLUMNS = [
-    "blur_score",
-    "ela_score",
-    "ocr_confidence",
-    "ocr_field_count",
-    "moire_score",
-    "dct_anomaly",
-    "reflection_score",
-    "edge_density",
-    "brightness",
-    "contrast",
-    "noise_ratio",
-    "symmetry_score",
-    "color_variance",
-    "ip_risk_score",
-    "emulator_detected",
-    "tor_detected",
-    "vpn_detected",
-    "repeated_attempts",
-    "liveness_passed",
-    "device_fingerprint_score",
-]
-
-
-def evaluate_model(
-    model_path: Optional[Path] = None,
-    dataset_path: Optional[Path] = None,
-    n_splits: int = 5,
-) -> dict:
+def evaluate_model_metrics(model, X: pd.DataFrame, y: pd.Series) -> Dict[str, Any]:
     """
-    Evalúa un modelo con validación cruzada y genera métricas.
+    Calcula métricas detalladas y curvas para evaluación del modelo.
 
     Args:
-        model_path: Ruta al modelo serializado.
-        dataset_path: Ruta al dataset Gold.
-        n_splits: Número de folds.
+        model: Modelo entrenado.
+        X: Features de evaluación.
+        y: Labels verdaderos.
 
     Returns:
-        Diccionario con todas las métricas.
+        Diccionario con métricas y curvas.
     """
-    if model_path is None:
-        model_path = MODELS_DIR / "fraud_detector.pkl"
-
-    if dataset_path is None:
-        dataset_path = GOLD_DIR / "gold_dataset.parquet"
-
-    model = joblib.load(model_path)
-    df = pd.read_parquet(dataset_path)
-
-    X = df[FEATURE_COLUMNS].values
-    y = df["is_fraud"].values
-
-    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
-
-    all_metrics = {
-        "roc_auc": [],
-        "pr_auc": [],
-        "recall": [],
-        "precision": [],
-        "f1": [],
-        "threshold": 35.0,
+    from sklearn.model_selection import StratifiedKFold, cross_val_predict
+    
+    FEATURE_COLS = [
+        "blur_score", "edge_density", "brightness", "contrast", 
+        "noise_ratio", "symmetry_score", "color_variance", "ela_score",
+        "moire_score", "dct_score", "reflection_score", "ocr_confidence",
+        "ip_risk_score", "emulator_detected", "tor_detected", 
+        "vpn_detected", "repeated_attempts", "liveness_passed"
+    ]
+    
+    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    y_pred_proba = cross_val_predict(model, X[FEATURE_COLS], y, cv=skf, method='predict_proba')[:, 1]
+    y_pred = (y_pred_proba >= 0.5).astype(int)
+    
+    roc_auc = roc_auc_score(y, y_pred_proba)
+    pr_auc = average_precision_score(y, y_pred_proba)
+    recall = recall_score(y, y_pred)
+    precision = precision_score(y, y_pred)
+    
+    fpr, tpr, _ = roc_curve(y, y_pred_proba)
+    precision_curve, recall_curve, _ = precision_recall_curve(y, y_pred_proba)
+    
+    cm = confusion_matrix(y, y_pred)
+    
+    return {
+        'ROC-AUC': roc_auc,
+        'PR-AUC': pr_auc,
+        'Recall (fraud)': recall,
+        'Precision (fraud)': precision,
+        'fpr': fpr,
+        'tpr': tpr,
+        'precision_curve': precision_curve,
+        'recall_curve': recall_curve,
+        'confusion_matrix': cm,
+        'y_pred': y_pred,
+        'y_pred_proba': y_pred_proba
     }
 
-    for fold, (train_idx, val_idx) in enumerate(skf.split(X, y)):
-        X_train, X_val = X[train_idx], X[val_idx]
-        y_train, y_val = y[train_idx], y[val_idx]
-
-        # Re-entrenar en cada fold para evaluación justa
-        model.fit(X_train, y_train)
-
-        y_pred_proba = model.predict_proba(X_val)[:, 1]
-
-        # Threshold 35/100 = 0.35
-        y_pred = (y_pred_proba > 0.35).astype(int)
-
-        all_metrics["roc_auc"].append(roc_auc_score(y_val, y_pred_proba))
-        all_metrics["pr_auc"].append(average_precision_score(y_val, y_pred_proba))
-        all_metrics["recall"].append(recall_score(y_val, y_pred, zero_division=0))
-        all_metrics["precision"].append(precision_score(y_val, y_pred, zero_division=0))
-
-        from sklearn.metrics import f1_score
-        all_metrics["f1"].append(f1_score(y_val, y_pred, zero_division=0))
-
-    # Promediar
-    results = {}
-    for key in ["roc_auc", "pr_auc", "recall", "precision", "f1"]:
-        values = all_metrics[key]
-        results[f"{key}_mean"] = np.mean(values)
-        results[f"{key}_std"] = np.std(values)
-    results["threshold"] = all_metrics["threshold"]
-
-    logger.info("Métricas de evaluación:")
-    for key, value in results.items():
-        logger.info(f"  {key}: {value:.4f}")
-
-    return results
-
-
-def plot_roc_curve(
-    model_path: Optional[Path] = None,
-    dataset_path: Optional[Path] = None,
-    output_path: Optional[Path] = None,
-) -> None:
+def plot_roc_curve(fpr: np.ndarray, tpr: np.ndarray, roc_auc: float, output_path: str = "reports/roc_curve.png") -> None:
     """
     Genera y guarda la curva ROC.
 
     Args:
-        model_path: Ruta al modelo.
-        dataset_path: Ruta al dataset.
-        output_path: Ruta de salida para la imagen.
+        fpr: False positive rate.
+        tpr: True positive rate.
+        roc_auc: Área bajo la curva ROC.
+        output_path: Ruta donde guardar la imagen.
     """
-    if model_path is None:
-        model_path = MODELS_DIR / "fraud_detector.pkl"
-    if dataset_path is None:
-        dataset_path = GOLD_DIR / "gold_dataset.parquet"
-    if output_path is None:
-        output_path = MODELS_DIR / "roc_curve.png"
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    plt.figure(figsize=(8, 6))
+    plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (area = {roc_auc:.3f})')
+    plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('Receiver Operating Characteristic')
+    plt.legend(loc="lower right")
+    plt.grid(True, alpha=0.3)
+    plt.savefig(output_path)
+    plt.close()
+    print(f"Curva ROC guardada en {output_path}")
 
-    model = joblib.load(model_path)
-    df = pd.read_parquet(dataset_path)
-
-    X = df[FEATURE_COLUMNS].values
-    y = df["is_fraud"].values
-
-    model.fit(X, y)
-    y_pred_proba = model.predict_proba(X)[:, 1]
-
-    fpr, tpr, _ = roc_curve(y, y_pred_proba)
-    auc = roc_auc_score(y, y_pred_proba)
-
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.plot(fpr, tpr, label=f"ROC AUC = {auc:.4f}", linewidth=2)
-    ax.plot([0, 1], [0, 1], "k--", linewidth=1)
-    ax.set_xlabel("False Positive Rate")
-    ax.set_ylabel("True Positive Rate")
-    ax.set_title("Curva ROC — DocShield")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-
-    fig.savefig(output_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    logger.info(f"Curva ROC guardada en {output_path}")
-
-
-def plot_pr_curve(
-    model_path: Optional[Path] = None,
-    dataset_path: Optional[Path] = None,
-    output_path: Optional[Path] = None,
-) -> None:
+def plot_pr_curve(precision: np.ndarray, recall: np.ndarray, pr_auc: float, output_path: str = "reports/pr_curve.png") -> None:
     """
     Genera y guarda la curva Precision-Recall.
 
     Args:
-        model_path: Ruta al modelo.
-        dataset_path: Ruta al dataset.
-        output_path: Ruta de salida para la imagen.
+        precision: Precision values.
+        recall: Recall values.
+        pr_auc: Área bajo la curva PR.
+        output_path: Ruta donde guardar la imagen.
     """
-    if model_path is None:
-        model_path = MODELS_DIR / "fraud_detector.pkl"
-    if dataset_path is None:
-        dataset_path = GOLD_DIR / "gold_dataset.parquet"
-    if output_path is None:
-        output_path = MODELS_DIR / "pr_curve.png"
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    plt.figure(figsize=(8, 6))
+    plt.plot(recall, precision, color='blue', lw=2, label=f'PR curve (area = {pr_auc:.3f})')
+    plt.xlabel('Recall')
+    plt.ylabel('Precision')
+    plt.ylim([0.0, 1.05])
+    plt.xlim([0.0, 1.0])
+    plt.title('Precision-Recall Curve')
+    plt.legend(loc="lower left")
+    plt.grid(True, alpha=0.3)
+    plt.savefig(output_path)
+    plt.close()
+    print(f"Curva PR guardada en {output_path}")
 
-    model = joblib.load(model_path)
-    df = pd.read_parquet(dataset_path)
+def print_classification_report(y_true: np.ndarray, y_pred: np.ndarray) -> None:
+    """
+    Imprime el reporte de clasificación detallado.
 
-    X = df[FEATURE_COLUMNS].values
-    y = df["is_fraud"].values
+    Args:
+        y_true: Labels verdaderos.
+        y_pred: Labels predichos.
+    """
+    print("\nReporte de clasificación:")
+    print(classification_report(y_true, y_pred, target_names=['Legit', 'Fraud']))
 
-    model.fit(X, y)
-    y_pred_proba = model.predict_proba(X)[:, 1]
+def plot_confusion_matrix(cm: np.ndarray, output_path: str = "reports/confusion_matrix.png") -> None:
+    """
+    Genera y guarda la matriz de confusión.
 
-    precision, recall, _ = precision_recall_curve(y, y_pred_proba)
-    avg_pr = average_precision_score(y, y_pred_proba)
-
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.plot(recall, precision, label=f"PR AUC = {avg_pr:.4f}", linewidth=2)
-    ax.set_xlabel("Recall")
-    ax.set_ylabel("Precision")
-    ax.set_title("Curva Precision-Recall — DocShield")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-
-    fig.savefig(output_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    logger.info(f"Curva PR guardada en {output_path}")
-
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    results = evaluate_model()
-    plot_roc_curve()
-    plot_pr_curve()
-    print(f"\nResultados: {results}")
+    Args:
+        cm: Matriz de confusión.
+        output_path: Ruta donde guardar la imagen.
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    plt.figure(figsize=(6, 6))
+    plt.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
+    plt.title('Confusion Matrix')
+    plt.colorbar()
+    tick_marks = np.arange(2)
+    plt.xticks(tick_marks, ['Legit', 'Fraud'], rotation=45)
+    plt.yticks(tick_marks, ['Legit', 'Fraud'])
+    
+    thresh = cm.max() / 2.
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[1]):
+            plt.text(j, i, format(cm[i, j], 'd'),
+                    ha="center", va="center",
+                    color="white" if cm[i, j] > thresh else "black")
+    
+    plt.tight_layout()
+    plt.ylabel('True label')
+    plt.xlabel('Predicted label')
+    plt.savefig(output_path)
+    plt.close()
+    print(f"Matriz de confusión guardada en {output_path}")

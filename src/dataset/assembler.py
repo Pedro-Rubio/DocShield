@@ -1,89 +1,71 @@
-"""
-Módulo de ensamblado del dataset Gold.
-
-Combina features de diferentes fuentes (visuales, OCR, metadatos)
-en un dataset tabular final listo para entrenamiento.
-"""
-
-import logging
-from pathlib import Path
-from typing import Optional
-
 import pandas as pd
+import numpy as np
+from typing import List, Optional
 
-logger = logging.getLogger(__name__)
-
-SILVER_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "silver"
-GOLD_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "gold"
-
-
-def assemble_gold_dataset(
-    visual_features_path: Optional[Path] = None,
-    ocr_features_path: Optional[Path] = None,
-    metadata_path: Optional[Path] = None,
-    synthetic: bool = True,
-) -> pd.DataFrame:
+def assemble_gold_layer(feature_files: List[str], output_path: str = "data/gold/dataset.parquet") -> pd.DataFrame:
     """
-    Ensambla el dataset Gold combinando diferentes fuentes de features.
+    Ensambla la Gold Layer combinando múltiples archivos de la Silver Layer.
 
     Args:
-        visual_features_path: Ruta al archivo de features visuales.
-        ocr_features_path: Ruta al archivo de features OCR.
-        metadata_path: Ruta al archivo de metadatos.
-        synthetic: Si usar datos sintéticos como fallback.
+        feature_files: Lista de rutas a archivos JSON de la Silver Layer.
+        output_path: Ruta donde guardar el dataset final en formato Parquet.
 
     Returns:
-        DataFrame Gold ensamblado.
+        DataFrame con el dataset Gold ensamblado.
     """
-    if synthetic:
-        from src.dataset.generator import generate_fraud_dataset
-
-        logger.info("Generando dataset sintético para Gold layer")
-        df = generate_fraud_dataset(n_legit=4000, n_fraud=600)
-
-        # Aplicar etiquetado heurístico
-        from src.dataset.labeler import apply_heuristic_labels
-
-        df = apply_heuristic_labels(df)
-
-        # Guardar en Gold layer
-        GOLD_DIR.mkdir(parents=True, exist_ok=True)
-        output_path = GOLD_DIR / "gold_dataset.parquet"
-        df.to_parquet(output_path, index=False)
-        logger.info(f"Dataset Gold guardado en {output_path}")
-
-        return df
-
-    # Enfoque con archivos reales (cuando se tengan datos reales)
-    frames = []
-
-    if visual_features_path and visual_features_path.exists():
-        visual_df = pd.read_parquet(visual_features_path)
-        frames.append(visual_df)
-        logger.info(f"Features visuales cargadas: {len(visual_df)} registros")
-
-    if ocr_features_path and ocr_features_path.exists():
-        ocr_df = pd.read_parquet(ocr_features_path)
-        frames.append(ocr_df)
-        logger.info(f"Features OCR cargadas: {len(ocr_df)} registros")
-
-    if metadata_path and metadata_path.exists():
-        meta_df = pd.read_parquet(metadata_path)
-        frames.append(meta_df)
-        logger.info(f"Metadatos cargados: {len(meta_df)} registros")
-
-    if not frames:
-        raise FileNotFoundError("No se encontraron archivos de features")
-
-    # Combinar todas las features
-    df = pd.concat(frames, axis=1)
-    logger.info(f"Dataset Gold ensamblado: {df.shape}")
-
+    import json
+    import os
+    
+    all_features = []
+    
+    for file_path in feature_files:
+        if not os.path.exists(file_path):
+            print(f"Advertencia: {file_path} no existe, se omite.")
+            continue
+        
+        with open(file_path, 'r') as f:
+            data = json.load(f)
+            all_features.extend(data if isinstance(data, list) else [data])
+    
+    if not all_features:
+        raise ValueError("No se encontraron datos para ensamblar.")
+    
+    df = pd.DataFrame(all_features)
+    
+    numeric_cols = ["blur_score", "edge_density", "brightness", "contrast", 
+                   "noise_ratio", "symmetry_score", "color_variance", "ela_score",
+                   "moire_score", "dct_score", "reflection_score", "ocr_confidence",
+                   "ip_risk_score", "emulator_detected", "tor_detected", 
+                   "vpn_detected", "repeated_attempts", "liveness_passed"]
+    
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+    
+    df = df.dropna(subset=["blur_score", "ela_score"])
+    
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    df.to_parquet(output_path, index=False)
+    
+    print(f"Gold Layer ensamblada: {len(df)} muestras guardadas en {output_path}")
     return df
 
+def create_feature_vector(features: dict) -> np.ndarray:
+    """
+    Crea un vector de features numérico para el modelo.
 
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    df = assemble_gold_dataset(synthetic=True)
-    print(f"Dataset Gold: {df.shape}")
-    print(f"Distribución de clases:\n{df['is_fraud'].value_counts()}")
+    Args:
+        features: Diccionario con las features extraídas.
+
+    Returns:
+        Array numpy con el vector de features.
+    """
+    feature_order = [
+        "blur_score", "edge_density", "brightness", "contrast", 
+        "noise_ratio", "symmetry_score", "color_variance", "ela_score",
+        "moire_score", "dct_score", "reflection_score", "ocr_confidence",
+        "ip_risk_score", "emulator_detected", "tor_detected", 
+        "vpn_detected", "repeated_attempts", "liveness_passed"
+    ]
+    
+    return np.array([features.get(feat, 0) for feat in feature_order])

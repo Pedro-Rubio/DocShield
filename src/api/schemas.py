@@ -1,50 +1,54 @@
-"""
-Modelos Pydantic para la API de DocShield.
-
-Define los schemas de request y response para los endpoints.
-"""
-
-from typing import Optional
-
 from pydantic import BaseModel, Field
+from typing import List, Optional, Dict
+from datetime import datetime
 
-
-class CaptureMeta(BaseModel):
-    """Metadatos de captura del documento."""
-
-    user_agent: str = Field(..., description="User-Agent del dispositivo")
-    screen_width: int = Field(..., ge=100, le=4096, description="Ancho de pantalla")
-    screen_height: int = Field(..., ge=100, le=4096, description="Alto de pantalla")
-    platform: str = Field(..., description="Plataforma (ios, android, web)")
-    ip_address: str = Field(..., description="Dirección IP del usuario")
-    liveness_passed: bool = Field(..., description="Si pasó la prueba de liveness")
-    accelerometer_data: list[float] = Field(
-        default_factory=list,
-        description="Datos del acelerómetro",
-    )
-
+class CaptureMetadata(BaseModel):
+    """Metadatos de la sesión de captura desde el dispositivo móvil."""
+    timestamp: Optional[str] = None
+    device_model: Optional[str] = None
+    os_version: Optional[str] = None
+    app_version: Optional[str] = None
+    accelerometer_data: Optional[List[float]] = None
+    liveness_passed: bool = False
+    liveness_rotation_deg: Optional[float] = None
+    ip_address: Optional[str] = None
+    ip_risk_score: float = 0.0
+    emulator_detected: int = 0
+    tor_detected: int = 0
+    vpn_detected: int = 0
+    repeated_attempts: int = 0
+    session_id: Optional[str] = None
 
 class VerifyDocumentRequest(BaseModel):
-    """Request para el endpoint de verificación."""
+    """Request para verificación de documento."""
+    image: str = Field(..., description="Imagen del documento en base64")
+    capture_meta: Optional[CaptureMetadata] = None
 
-    image: str = Field(..., description="Imagen en base64")
-    capture_meta: CaptureMeta = Field(..., description="Metadatos de captura")
-
+class Signal(BaseModel):
+    """Señal de fraude detectada."""
+    name: str
+    description: str
+    weight: float
+    value: float
 
 class VerifyDocumentResponse(BaseModel):
-    """Response del endpoint de verificación."""
-
+    """Response de verificación de documento."""
     fraud_score: float = Field(..., description="Score de fraude (0-100)")
-    is_fraud: bool = Field(..., description="Si se detectó fraude")
-    signals: list[str] = Field(..., description="Señales detectadas (en español)")
-    confidence: float = Field(..., description="Confianza del modelo (0-1)")
+    is_fraud: bool = Field(..., description="Si el documento es fraudulento")
+    signals: List[str] = Field(default_factory=list, description="Señales detectadas")
+    confidence: float = Field(..., description="Confianza de la predicción (0-1)")
     processing_ms: int = Field(..., description="Tiempo de procesamiento en ms")
-
+    document_type: Optional[str] = None
+    fraud_type: Optional[str] = None
 
 class HealthResponse(BaseModel):
     """Response del health check."""
+    status: str = "ok"
+    model_version: str = "1.0.0"
+    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
 
-    model_config = {"protected_namespaces": ()}
-
-    status: str = Field(..., description="Estado del servicio")
-    model_version: str = Field(..., description="Versión del modelo")
+class ErrorResponse(BaseModel):
+    """Response de error."""
+    error: str
+    detail: Optional[str] = None
+    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())

@@ -1,227 +1,159 @@
-"""
-Módulo de entrenamiento de modelos de detección de fraude.
-
-Entrena modelos XGBoost y LightGBM con el dataset Gold,
-utilizando StratifiedKFold para evaluación robusta.
-"""
-
-import logging
-from pathlib import Path
-
-import joblib
-import numpy as np
 import pandas as pd
-from sklearn.model_selection import StratifiedKFold
+import numpy as np
+import joblib
+import os
+from typing import Tuple, Dict, Any
+from sklearn.model_selection import StratifiedKFold, cross_val_predict
+from sklearn.metrics import roc_auc_score, average_precision_score, classification_report
+import xgboost as xgb
+import lightgbm as lgb
 
-logger = logging.getLogger(__name__)
-
-MODELS_DIR = Path(__file__).resolve().parent.parent.parent / "models"
-GOLD_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "gold"
-
-FEATURE_COLUMNS = [
-    "blur_score",
-    "ela_score",
-    "ocr_confidence",
-    "ocr_field_count",
-    "moire_score",
-    "dct_anomaly",
-    "reflection_score",
-    "edge_density",
-    "brightness",
-    "contrast",
-    "noise_ratio",
-    "symmetry_score",
-    "color_variance",
-    "ip_risk_score",
-    "emulator_detected",
-    "tor_detected",
-    "vpn_detected",
-    "repeated_attempts",
-    "liveness_passed",
-    "device_fingerprint_score",
+FEATURE_COLS = [
+    "blur_score", "edge_density", "brightness", "contrast", 
+    "noise_ratio", "symmetry_score", "color_variance", "ela_score",
+    "moire_score", "dct_score", "reflection_score", "ocr_confidence",
+    "ip_risk_score", "emulator_detected", "tor_detected", 
+    "vpn_detected", "repeated_attempts", "liveness_passed"
 ]
 
-TARGET_COLUMN = "is_fraud"
-
-
-def train_models(
-    dataset_path: Path | None = None,
-    n_splits: int = 5,
-    random_seed: int = 42,
-) -> dict:
+def train_xgboost(X: pd.DataFrame, y: pd.Series, params: Dict = None) -> xgb.XGBClassifier:
     """
-    Entrena modelos XGBoost y LightGBM con validación cruzada.
+    Entrena un modelo XGBoost para clasificación de fraude.
 
     Args:
-        dataset_path: Ruta al dataset Gold (.parquet).
-        n_splits: Número de folds para StratifiedKFold.
-        random_seed: Seed para reproducibilidad.
+        X: Features de entrenamiento.
+        y: Labels (is_fraud).
+        params: Parámetros opcionales para XGBClassifier.
 
     Returns:
-        Diccionario con los modelos entrenados y métricas.
+        Modelo XGBoost entrenado.
     """
-    # Cargar dataset
-    if dataset_path is None:
-        dataset_path = GOLD_DIR / "gold_dataset.parquet"
-
-    if not dataset_path.exists():
-        logger.info("Dataset no encontrado, generando...")
-        from src.dataset.assembler import assemble_gold_dataset
-
-        df = assemble_gold_dataset(synthetic=True)
-    else:
-        df = pd.read_parquet(dataset_path)
-
-    # Preparar features y target
-    X = df[FEATURE_COLUMNS].values
-    y = df[TARGET_COLUMN].values
-
-    logger.info(f"Dataset: {X.shape[0]} muestras, {X.shape[1]} features")
-    logger.info(f"Distribución: {np.bincount(y)}")
-
-    # Cross-validation
-    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_seed)
-
-    xgb_metrics = []
-    lgbm_metrics = []
-
-    for fold, (train_idx, val_idx) in enumerate(skf.split(X, y)):
-        X_train, X_val = X[train_idx], X[val_idx]
-        y_train, y_val = y[train_idx], y[val_idx]
-
-        # Entrenar XGBoost
-        xgb_model = _train_xgboost(X_train, y_train)
-        xgb_fold_metrics = _evaluate_fold(xgb_model, X_val, y_val, fold, "XGBoost")
-        xgb_metrics.append(xgb_fold_metrics)
-
-        # Entrenar LightGBM
-        lgbm_model = _train_lightgbm(X_train, y_train)
-        lgbm_fold_metrics = _evaluate_fold(lgbm_model, X_val, y_val, fold, "LightGBM")
-        lgbm_metrics.append(lgbm_fold_metrics)
-
-    # Promediar métricas
-    avg_xgb = _average_metrics(xgb_metrics)
-    avg_lgbm = _average_metrics(lgbm_metrics)
-
-    logger.info(f"\nXGBoost promedio:\n{avg_xgb}")
-    logger.info(f"\nLightGBM promedio:\n{avg_lgbm}")
-
-    # Entrenar modelo final con todos los datos (mejor de los dos)
-    if avg_xgb["pr_auc"] >= avg_lgbm["pr_auc"]:
-        best_model_name = "XGBoost"
-        best_model = _train_xgboost(X, y)
-    else:
-        best_model_name = "LightGBM"
-        best_model = _train_lightgbm(X, y)
-
-    logger.info(f"Modelo final: {best_model_name}")
-
-    # Guardar modelos
-    MODELS_DIR.mkdir(parents=True, exist_ok=True)
-
-    # Modelo final (usado en producción)
-    joblib.dump(best_model, MODELS_DIR / "fraud_detector.pkl")
-
-    # Modelos de CV (para comparación)
-    xgb_final = _train_xgboost(X, y)
-    lgbm_final = _train_lightgbm(X, y)
-    joblib.dump(xgb_final, MODELS_DIR / "xgboost_model.pkl")
-    joblib.dump(lgbm_final, MODELS_DIR / "lightgbm_model.pkl")
-
-    # Guardar feature names
-    joblib.dump(FEATURE_COLUMNS, MODELS_DIR / "feature_names.pkl")
-
-    logger.info(f"Modelos guardados en {MODELS_DIR}")
-
-    return {
-        "xgb_metrics": avg_xgb,
-        "lgbm_metrics": avg_lgbm,
-        "best_model": best_model_name,
-        "feature_names": FEATURE_COLUMNS,
-    }
-
-
-def _train_xgboost(X: np.ndarray, y: np.ndarray):
-    """Entrena un modelo XGBoost."""
-    import xgboost as xgb
-
-    scale_pos_weight = np.sum(y == 0) / max(np.sum(y == 1), 1)
-
-    model = xgb.XGBClassifier(
-        n_estimators=200,
-        max_depth=6,
-        learning_rate=0.05,
-        scale_pos_weight=scale_pos_weight,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        random_state=42,
-        eval_metric="logloss",
-        use_label_encoder=False,
-    )
-    model.fit(X, y)
+    if params is None:
+        params = {
+            'n_estimators': 200,
+            'max_depth': 6,
+            'learning_rate': 0.1,
+            'objective': 'binary:logistic',
+            'eval_metric': 'aucpr',
+            'random_state': 42,
+            'n_jobs': -1
+        }
+    
+    model = xgb.XGBClassifier(**params)
+    model.fit(X[FEATURE_COLS], y)
     return model
 
+def train_lightgbm(X: pd.DataFrame, y: pd.Series, params: Dict = None) -> lgb.LGBMClassifier:
+    """
+    Entrena un modelo LightGBM para clasificación de fraude.
 
-def _train_lightgbm(X: np.ndarray, y: np.ndarray):
-    """Entrena un modelo LightGBM."""
-    import lightgbm as lgb
+    Args:
+        X: Features de entrenamiento.
+        y: Labels (is_fraud).
+        params: Parámetros opcionales para LGBMClassifier.
 
-    scale_pos_weight = np.sum(y == 0) / max(np.sum(y == 1), 1)
-
-    model = lgb.LGBMClassifier(
-        n_estimators=200,
-        max_depth=6,
-        learning_rate=0.05,
-        scale_pos_weight=scale_pos_weight,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        random_state=42,
-        verbose=-1,
-    )
-    model.fit(X, y)
+    Returns:
+        Modelo LightGBM entrenado.
+    """
+    if params is None:
+        params = {
+            'n_estimators': 200,
+            'max_depth': 6,
+            'learning_rate': 0.1,
+            'objective': 'binary',
+            'metric': 'auc',
+            'random_state': 42,
+            'n_jobs': -1,
+            'verbose': -1
+        }
+    
+    model = lgb.LGBMClassifier(**params)
+    model.fit(X[FEATURE_COLS], y)
     return model
 
+def evaluate_model(model, X: pd.DataFrame, y: pd.Series, cv: int = 5) -> Dict[str, float]:
+    """
+    Evalúa el modelo usando StratifiedKFold y métricas PR-AUC, ROC-AUC.
 
-def _evaluate_fold(model, X_val: np.ndarray, y_val: np.ndarray, fold: int, name: str) -> dict:
-    """Evalúa un modelo en un fold de validación."""
-    from sklearn.metrics import (
-        average_precision_score,
-        precision_score,
-        recall_score,
-        roc_auc_score,
-    )
+    Args:
+        model: Modelo entrenado.
+        X: Features.
+        y: Labels.
+        cv: Número de folds para cross-validation.
 
-    y_pred_proba = model.predict_proba(X_val)[:, 1]
-    y_pred = model.predict(X_val)
-
+    Returns:
+        Diccionario con métricas de evaluación.
+    """
+    from sklearn.model_selection import cross_val_predict
+    from sklearn.metrics import roc_auc_score, average_precision_score, recall_score, precision_score
+    
+    skf = StratifiedKFold(n_splits=cv, shuffle=True, random_state=42)
+    y_pred_proba = cross_val_predict(model, X[FEATURE_COLS], y, cv=skf, method='predict_proba')[:, 1]
+    
+    roc_auc = roc_auc_score(y, y_pred_proba)
+    pr_auc = average_precision_score(y, y_pred_proba)
+    
+    y_pred = (y_pred_proba >= 0.5).astype(int)
+    recall = recall_score(y, y_pred)
+    precision = precision_score(y, y_pred)
+    
     return {
-        "fold": fold,
-        "model": name,
-        "roc_auc": roc_auc_score(y_val, y_pred_proba),
-        "pr_auc": average_precision_score(y_val, y_pred_proba),
-        "recall": recall_score(y_val, y_pred, zero_division=0),
-        "precision": precision_score(y_val, y_pred, zero_division=0),
+        'ROC-AUC': roc_auc,
+        'PR-AUC': pr_auc,
+        'Recall (fraud)': recall,
+        'Precision (fraud)': precision
     }
 
+def save_model(model, path: str = "models/docshield_model.pkl") -> None:
+    """
+    Guarda el modelo entrenado usando joblib.
 
-def _average_metrics(metrics: list[dict]) -> dict:
-    """Promedia métricas de todos los folds."""
-    avg = {}
-    for key in metrics[0].keys():
-        if key in ("fold", "model"):
-            continue
-        values = [m[key] for m in metrics]
-        avg[f"{key}_mean"] = np.mean(values)
-        avg[f"{key}_std"] = np.std(values)
-    return avg
+    Args:
+        model: Modelo entrenado.
+        path: Ruta donde guardar el modelo.
+    """
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    joblib.dump(model, path)
+    print(f"Modelo guardado en {path}")
 
+def load_model(path: str = "models/docshield_model.pkl"):
+    """
+    Carga un modelo guardado.
+
+    Args:
+        path: Ruta al modelo guardado.
+
+    Returns:
+        Modelo cargado.
+    """
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Modelo no encontrado en {path}")
+    return joblib.load(path)
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    results = train_models()
-    print("\n" + "=" * 50)
-    print("RESULTADOS DEL ENTRENAMIENTO")
-    print("=" * 50)
-    for key, value in results.items():
-        if key != "feature_names":
-            print(f"{key}: {value}")
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Entrenar modelo DocShield')
+    parser.add_argument('--data', type=str, default='data/gold/dataset.parquet',
+                        help='Ruta al dataset Gold')
+    parser.add_argument('--model', type=str, default='xgb', choices=['xgb', 'lgb'],
+                        help='Tipo de modelo')
+    parser.add_argument('--output', type=str, default='models/docshield_model.pkl',
+                        help='Ruta de salida del modelo')
+    args = parser.parse_args()
+    
+    df = pd.read_parquet(args.data)
+    print(f"Dataset cargado: {len(df)} muestras")
+    print(f"Distribución de clases:\n{df['is_fraud'].value_counts()}")
+    
+    if args.model == 'xgb':
+        model = train_xgboost(df, df['is_fraud'])
+    else:
+        model = train_lightgbm(df, df['is_fraud'])
+    
+    metrics = evaluate_model(model, df, df['is_fraud'])
+    print("\nMétricas de evaluación:")
+    for k, v in metrics.items():
+        print(f"  {k}: {v:.4f}")
+    
+    save_model(model, args.output)
