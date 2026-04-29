@@ -1,0 +1,32 @@
+# Imágenes de documentos — NUNCA subir al repo
+data/bronze/
+*.jpg
+*.jpeg
+*.png
+*.pdf
+
+# Modelos grandes
+models/*.pkl
+models/*.joblib
+mlruns/
+
+# Datos procesados
+data/silver/*.json
+data/gold/*.parquet
+
+# Entorno
+.env
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
