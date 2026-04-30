@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict
-from datetime import datetime
+from datetime import datetime, timezone
 
 class CaptureMetadata(BaseModel):
     """Metadatos de la sesión de captura desde el dispositivo móvil."""
@@ -47,10 +47,10 @@ class HealthResponse(BaseModel):
     """Response del health check."""
     status: str = "ok"
     model_version: str = "1.0.0"
-    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 class ErrorResponse(BaseModel):
     """Response de error."""
     error: str
     detail: Optional[str] = None
-    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())

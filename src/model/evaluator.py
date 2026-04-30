@@ -4,8 +4,9 @@ import joblib
 import matplotlib.pyplot as plt
 from typing import Dict, Any, Tuple
 from sklearn.metrics import (
-    roc_curve, precision_recall_curve, 
+    roc_curve, precision_recall_curve,
     roc_auc_score, average_precision_score,
+    recall_score, precision_score,
     classification_report, confusion_matrix
 )
 import os

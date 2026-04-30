@@ -2,6 +2,9 @@ import pandas as pd
 import numpy as np
 from typing import List, Optional
 from src.model.constants import FEATURE_COLS
+
+
+def assemble_gold_layer(feature_files: List[str], output_path: str) -> pd.DataFrame:
     """
     Ensambla la Gold Layer combinando múltiples archivos de la Silver Layer.
 

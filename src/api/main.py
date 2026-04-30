@@ -97,7 +97,7 @@ async def verify_document_endpoint(request: Request, body: VerifyDocumentRequest
     try:
         capture_meta = None
         if body.capture_meta:
-            capture_meta = body.capture_meta.dict()
+            capture_meta = body.capture_meta.model_dump()
         
         result = verify_document(body.image, capture_meta)
         
@@ -125,7 +125,7 @@ async def verify_document_endpoint(request: Request, body: VerifyDocumentRequest
 async def http_exception_handler(request: Request, exc: HTTPException):
     return JSONResponse(
         status_code=exc.status_code,
-        content=ErrorResponse(error=exc.detail).dict()
+        content=ErrorResponse(error=exc.detail).model_dump()
     )
 
 

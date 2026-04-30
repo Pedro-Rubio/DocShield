@@ -12,6 +12,17 @@ try:
 except ImportError:
     pytesseract = None
 
+# Singleton cache para evitar reinicializar EasyOCR en cada llamada
+_easyocr_reader = None
+
+
+def _get_easyocr_reader():
+    global _easyocr_reader
+    if _easyocr_reader is None and easyocr is not None:
+        _easyocr_reader = easyocr.Reader(['es', 'en'], gpu=False)
+    return _easyocr_reader
+
+
 def extract_ocr_features(image_path: str) -> Dict[str, float]:
     """
     Extrae features de OCR (confianza de reconocimiento de texto).
@@ -23,10 +34,10 @@ def extract_ocr_features(image_path: str) -> Dict[str, float]:
         Diccionario con ocr_confidence (confianza promedio de OCR).
     """
     ocr_confidence = 0.0
-    
-    if easyocr is not None:
+
+    reader = _get_easyocr_reader()
+    if reader is not None:
         try:
-            reader = easyocr.Reader(['es', 'en'], gpu=False)
             result = reader.readtext(image_path)
             if result:
                 confidences = [item[2] for item in result if len(item) >= 3]

@@ -1,21 +1,20 @@
 import streamlit as st
 import numpy as np
 import cv2
-import base64
 import io
 import os
 import sys
+import tempfile
 from PIL import Image
 import pandas as pd
-import matplotlib.pyplot as plt
 import time
 
 sys.path.append('..')
 
-from src.pipeline.risk_engine import calculate_risk_score
+from src.pipeline.risk_engine import calculate_risk_score, DEFAULT_WEIGHTS
+from src.pipeline.visual_extractor import extract_visual_features, compute_ela
 from src.pipeline.anti_spoofing import detect_moire, analyze_dct_blocks, analyze_reflection
 from src.pipeline.ocr_extractor import extract_ocr_features
-from src.dataset.labeler import get_fraud_signals
 
 st.set_page_config(page_title="DocShield — Fraud Analysis Tool", layout="wide")
 
@@ -43,7 +42,6 @@ if uploaded_file is not None:
         st.image(image, use_column_width=True)
         
         # Usar archivo temporal único para evitar condiciones de carrera
-        import tempfile
         temp_file = tempfile.NamedTemporaryFile(suffix='.jpg', delete=False)
         temp_path = temp_file.name
         temp_file.close()
@@ -80,29 +78,31 @@ if uploaded_file is not None:
                 st.stop()
         
         processing_ms = int((time.time() - start_time) * 1000)
-        
-        from src.api.anti_spoofing_api import WEIGHTS, calculate_fraud_score
-        fraud_score, signals = calculate_fraud_score(all_features, {})
-        
-        if fraud_score >= 70:
+
+        risk_result = calculate_risk_score(all_features, threshold=fraud_threshold)
+        fraud_score = risk_result["risk_score"]
+        risk_level = risk_result["risk_level"]
+        signals = risk_result["signals"]
+
+        if risk_level == "HIGH":
             risk_emoji = "🔴"
             risk_color = "red"
-        elif fraud_score >= 35:
+        elif risk_level == "MEDIUM":
             risk_emoji = "🟡"
             risk_color = "orange"
         else:
             risk_emoji = "🟢"
             risk_color = "green"
-        
+
         st.subheader("Resultado")
         st.metric("Score de Fraude", f"{fraud_score:.1f}/100", delta=None)
-        st.markdown(f"**Nivel de riesgo:** {risk_emoji} {risk_color.upper()}")
+        st.markdown(f"**Nivel de riesgo:** {risk_emoji} {risk_level}")
         st.markdown(f"**Tiempo de procesamiento:** {processing_ms} ms")
-        
+
         if signals:
             st.markdown("**Señales detectadas:**")
-            for sig in signals:
-                st.markdown(f"- ⚠️ {sig}")
+            for sig_name, sig_val in signals.items():
+                st.markdown(f"- ⚠️ {sig_name}: {sig_val:.2f}")
         else:
             st.markdown("✅ No se detectaron señales de fraude")
     
@@ -132,7 +132,7 @@ if uploaded_file is not None:
     
     with tab3:
         st.subheader("Pesos del Modelo")
-        weight_df = pd.DataFrame(list(WEIGHTS.items()), columns=["Feature", "Peso"])
+        weight_df = pd.DataFrame(list(DEFAULT_WEIGHTS.items()), columns=["Feature", "Peso"])
         st.bar_chart(weight_df.set_index("Feature"))
     
     if uploaded_file is not None and 'temp_path' in locals() and os.path.exists(temp_path):
