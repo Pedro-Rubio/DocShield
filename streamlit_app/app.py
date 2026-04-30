@@ -12,10 +12,10 @@ import time
 
 sys.path.append('..')
 
-from src.pipeline.risk_engine import calculate_risk_score
+from src.pipeline.risk_engine import calculate_risk_score, get_risk_level_description
+from src.pipeline.visual_extractor import extract_visual_features, compute_ela
 from src.pipeline.anti_spoofing import detect_moire, analyze_dct_blocks, analyze_reflection
 from src.pipeline.ocr_extractor import extract_ocr_features
-from src.dataset.labeler import get_fraud_signals
 
 st.set_page_config(page_title="DocShield — Fraud Analysis Tool", layout="wide")
 

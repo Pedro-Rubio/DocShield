@@ -6,7 +6,8 @@ from typing import Dict, Any, Tuple
 from sklearn.metrics import (
     roc_curve, precision_recall_curve, 
     roc_auc_score, average_precision_score,
-    classification_report, confusion_matrix
+    classification_report, confusion_matrix,
+    recall_score, precision_score
 )
 import os
 from src.model.constants import FEATURE_COLS

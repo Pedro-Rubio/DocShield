@@ -111,7 +111,7 @@ async def verify_document_endpoint(request: Request, body: VerifyDocumentRequest
             signals=result["signals"],
             signal_details=result.get("signal_details"),
             processing_ms=processing_ms
-        )
+        ).model_dump()
         
     except ValueError as e:
         logger.warning(f"Error de validación: {e}")

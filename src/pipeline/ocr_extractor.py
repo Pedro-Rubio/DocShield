@@ -12,6 +12,19 @@ try:
 except ImportError:
     pytesseract = None
 
+# Singleton para EasyOCR
+_EASYOCR_READERS = {}
+
+def _get_easyocr_reader(langs=['es', 'en']):
+    key = tuple(langs)
+    if key not in _EASYOCR_READERS:
+        try:
+            import easyocr
+            _EASYOCR_READERS[key] = easyocr.Reader(langs, gpu=False)
+        except (ImportError, Exception):
+            return None
+    return _EASYOCR_READERS.get(key)
+
 def extract_ocr_features(image_path: str) -> Dict[str, float]:
     """
     Extrae features de OCR (confianza de reconocimiento de texto).
@@ -24,9 +37,10 @@ def extract_ocr_features(image_path: str) -> Dict[str, float]:
     """
     ocr_confidence = 0.0
     
-    if easyocr is not None:
+    # Intentar con EasyOCR (singleton)
+    reader = _get_easyocr_reader(['es', 'en'])
+    if reader:
         try:
-            reader = easyocr.Reader(['es', 'en'], gpu=False)
             result = reader.readtext(image_path)
             if result:
                 confidences = [item[2] for item in result if len(item) >= 3]
@@ -35,6 +49,7 @@ def extract_ocr_features(image_path: str) -> Dict[str, float]:
         except Exception:
             pass
     
+    # Fallback a Tesseract
     if ocr_confidence == 0.0 and pytesseract is not None:
         try:
             img = Image.open(image_path)

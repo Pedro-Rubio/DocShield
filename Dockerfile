@@ -1,23 +1,22 @@
+# Multi-stage build para producción
+FROM python:3.12-slim as builder
+
+WORKDIR /build
+COPY requirements.txt .
+RUN pip install --no-cache-dir --user -r requirements.txt
+
+# Imagen final de producción
 FROM python:3.12-slim
 
 WORKDIR /app
 
-# Instalar dependencias del sistema
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    libgl1-mesa-glx \
-    libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
+# Copiar solo las dependencias instaladas
+COPY --from=builder /root/.local /root/.local
 
-# Copiar archivos de dependencias
-COPY requirements.txt .
-COPY requirements-dev.txt .
+# Asegurar que los scripts estén en PATH
+ENV PATH=/root/.local/bin:$PATH
 
-# Instalar Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install --no-cache-dir -r requirements-dev.txt
-
-# Copiar el resto de la aplicación
+# Copiar el resto de la aplicación (sin requirements-dev.txt)
 COPY . .
 
 # Exponer el puerto de la API
