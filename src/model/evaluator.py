@@ -4,10 +4,12 @@ import joblib
 import matplotlib.pyplot as plt
 from typing import Dict, Any, Tuple
 from sklearn.metrics import (
-    roc_curve, precision_recall_curve, auc,
+    roc_curve, precision_recall_curve, 
+    roc_auc_score, average_precision_score,
     classification_report, confusion_matrix
 )
 import os
+from src.model.constants import FEATURE_COLS
 
 def evaluate_model_metrics(model, X: pd.DataFrame, y: pd.Series) -> Dict[str, Any]:
     """
@@ -22,14 +24,6 @@ def evaluate_model_metrics(model, X: pd.DataFrame, y: pd.Series) -> Dict[str, An
         Diccionario con métricas y curvas.
     """
     from sklearn.model_selection import StratifiedKFold, cross_val_predict
-    
-    FEATURE_COLS = [
-        "blur_score", "edge_density", "brightness", "contrast", 
-        "noise_ratio", "symmetry_score", "color_variance", "ela_score",
-        "moire_score", "dct_score", "reflection_score", "ocr_confidence",
-        "ip_risk_score", "emulator_detected", "tor_detected", 
-        "vpn_detected", "repeated_attempts", "liveness_passed"
-    ]
     
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
     y_pred_proba = cross_val_predict(model, X[FEATURE_COLS], y, cv=skf, method='predict_proba')[:, 1]

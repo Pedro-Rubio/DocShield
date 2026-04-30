@@ -31,13 +31,24 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+# CORS restringido - cambiar por dominios específicos en producción
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8501").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+# API Key simple para autenticación (opcional)
+API_KEY = os.getenv("DOCSHIELD_API_KEY")
+
+def verify_api_key(request: Request):
+    if API_KEY and request.headers.get("X-API-Key") != API_KEY:
+        raise HTTPException(status_code=403, detail="API Key inválida")
+    return True
 
 # Configuración desde .env
 FRAUD_THRESHOLD = float(os.getenv("FRAUD_THRESHOLD", "35.0"))
@@ -75,7 +86,7 @@ async def health_check():
 
 @app.post("/api/v1/verify-document", response_model=VerifyDocumentResponse)
 @limiter.limit("10/minute")
-async def verify_document_endpoint(request: Request, body: VerifyDocumentRequest):
+async def verify_document_endpoint(request: Request, body: VerifyDocumentRequest, _: bool = Depends(verify_api_key)):
     """
     Endpoint para verificación de documento.
     

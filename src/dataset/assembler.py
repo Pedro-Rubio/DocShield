@@ -1,8 +1,7 @@
 import pandas as pd
 import numpy as np
 from typing import List, Optional
-
-def assemble_gold_layer(feature_files: List[str], output_path: str = "data/gold/dataset.parquet") -> pd.DataFrame:
+from src.model.constants import FEATURE_COLS
     """
     Ensambla la Gold Layer combinando múltiples archivos de la Silver Layer.
 
@@ -32,11 +31,7 @@ def assemble_gold_layer(feature_files: List[str], output_path: str = "data/gold/
     
     df = pd.DataFrame(all_features)
     
-    numeric_cols = ["blur_score", "edge_density", "brightness", "contrast", 
-                   "noise_ratio", "symmetry_score", "color_variance", "ela_score",
-                   "moire_score", "dct_score", "reflection_score", "ocr_confidence",
-                   "ip_risk_score", "emulator_detected", "tor_detected", 
-                   "vpn_detected", "repeated_attempts", "liveness_passed"]
+    numeric_cols = FEATURE_COLS
     
     for col in numeric_cols:
         if col in df.columns:

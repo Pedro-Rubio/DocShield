@@ -21,3 +21,5 @@ plotly>=5.22
 fpdf2>=2.7
 python-multipart>=0.0.9
 pydantic>=2.7
+slowapi>=0.1.9
+python-dotenv>=1.0

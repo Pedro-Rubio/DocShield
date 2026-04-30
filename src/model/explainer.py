@@ -4,6 +4,8 @@ import joblib
 import matplotlib.pyplot as plt
 from typing import Dict, List, Any
 import os
+from src.model.constants import FEATURE_COLS
+
 
 def generate_shap_explanation(model, X_sample: pd.DataFrame, feature_names: List[str] = None) -> Dict[str, Any]:
     """
@@ -23,13 +25,7 @@ def generate_shap_explanation(model, X_sample: pd.DataFrame, feature_names: List
         raise ImportError("SHAP no está instalado. Instalar con: pip install shap")
     
     if feature_names is None:
-        feature_names = [
-            "blur_score", "edge_density", "brightness", "contrast", 
-            "noise_ratio", "symmetry_score", "color_variance", "ela_score",
-            "moire_score", "dct_score", "reflection_score", "ocr_confidence",
-            "ip_risk_score", "emulator_detected", "tor_detected", 
-            "vpn_detected", "repeated_attempts", "liveness_passed"
-        ]
+        feature_names = FEATURE_COLS
     
     explainer = shap.TreeExplainer(model)
     shap_values = explainer.shap_values(X_sample[feature_names])
@@ -43,6 +39,7 @@ def generate_shap_explanation(model, X_sample: pd.DataFrame, feature_names: List
         'base_value': explainer.expected_value,
         'X_sample': X_sample[feature_names].values
     }
+
 
 def plot_shap_summary(shap_values: np.ndarray, X_sample: pd.DataFrame, 
                       feature_names: List[str], output_path: str = "reports/shap_summary.png") -> None:
@@ -67,6 +64,7 @@ def plot_shap_summary(shap_values: np.ndarray, X_sample: pd.DataFrame,
     plt.savefig(output_path)
     plt.close()
     print(f"Gráfico SHAP guardado en {output_path}")
+
 
 def plot_shap_waterfall(shap_dict: Dict[str, Any], sample_idx: int = 0, 
                         output_path: str = "reports/shap_waterfall.png") -> None:

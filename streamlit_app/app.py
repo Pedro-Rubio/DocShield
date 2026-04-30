@@ -3,11 +3,16 @@ import numpy as np
 import cv2
 import base64
 import io
+import os
+import sys
 from PIL import Image
 import pandas as pd
 import matplotlib.pyplot as plt
 import time
-from src.pipeline.visual_extractor import extract_visual_features, compute_ela
+
+sys.path.append('..')
+
+from src.pipeline.risk_engine import calculate_risk_score
 from src.pipeline.anti_spoofing import detect_moire, analyze_dct_blocks, analyze_reflection
 from src.pipeline.ocr_extractor import extract_ocr_features
 from src.dataset.labeler import get_fraud_signals
@@ -37,7 +42,11 @@ if uploaded_file is not None:
         image = Image.open(uploaded_file).convert('RGB')
         st.image(image, use_column_width=True)
         
-        temp_path = "temp_upload.jpg"
+        # Usar archivo temporal único para evitar condiciones de carrera
+        import tempfile
+        temp_file = tempfile.NamedTemporaryFile(suffix='.jpg', delete=False)
+        temp_path = temp_file.name
+        temp_file.close()
         image.save(temp_path)
     
     with col2:
@@ -127,7 +136,7 @@ if uploaded_file is not None:
         st.bar_chart(weight_df.set_index("Feature"))
     
     if uploaded_file is not None and 'temp_path' in locals() and os.path.exists(temp_path):
-        os.remove(temp_path)
+        os.unlink(temp_path)
 else:
     st.info("Subí una imagen para comenzar el análisis.")
 

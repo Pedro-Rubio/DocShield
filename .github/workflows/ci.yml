@@ -1,0 +1,35 @@
+name: CI DocShield
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+    
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+        pip install -r requirements-dev.txt
+        pip install .
+    
+    - name: Run tests
+      run: python -m pytest tests/ -v
+    
+    - name: Lint with pylint
+      run: pylint src/ --disable=C0114,C0115,C0116,R0801
+      continue-on-error: true
+    
+    - name: Check syntax
+      run: python -m py_compile src/**/*.py

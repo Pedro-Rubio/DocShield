@@ -10,15 +10,27 @@ import io
 from src.pipeline.anti_spoofing import detect_moire, analyze_dct_blocks, analyze_reflection
 from src.pipeline.risk_engine import calculate_risk_score
 
+# Limpieza: Eliminar lógica muerta tras migrar a risk_engine
+# (calculate_fraud_score y WEIGHTS ya no se usan aquí)
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def decode_base64_image(base64_string: str) -> Tuple[np.ndarray, np.ndarray, Image.Image]:
+def decode_base64_image(base64_string: str, max_size_mb: float = 5.0) -> Tuple[np.ndarray, np.ndarray, Image.Image]:
     try:
         if ',' in base64_string:
             base64_string = base64_string.split(',')[1]
+        
+        # Validar tamaño para prevenir DoS
+        estimated_bytes = len(base64_string) * 3 / 4
+        if estimated_bytes > max_size_mb * 1024 * 1024:
+            raise ValueError(f"Imagen excede el tamaño máximo de {max_size_mb}MB")
+        
         image_data = base64.b64decode(base64_string)
+        if len(image_data) > max_size_mb * 1024 * 1024:
+            raise ValueError(f"Imagen excede el tamaño máximo de {max_size_mb}MB")
+            
         pil_img = Image.open(io.BytesIO(image_data)).convert('RGB')
         bgr = np.array(pil_img)
         bgr = cv2.cvtColor(bgr, cv2.COLOR_RGB2BGR)
@@ -96,62 +108,32 @@ def _compute_ela_from_pil(pil_img: Image.Image, quality: int = 90) -> float:
     return float(diff.max())
 
 
+# Singleton para EasyOCR (evita reinicialización en cada request)
+_EASYOCR_READERS = {}
+
+def _get_ocr_reader(langs=['es', 'en']):
+    key = tuple(langs)
+    if key not in _EASYOCR_READERS:
+        try:
+            import easyocr
+            _EASYOCR_READERS[key] = easyocr.Reader(langs, gpu=False)
+        except ImportError:
+            return None
+    return _EASYOCR_READERS.get(key)
+
 def _extract_ocr_from_pil(pil_img: Image.Image) -> Dict[str, float]:
     ocr_confidence = 0.0
-    try:
-        import easyocr
-        reader = easyocr.Reader(['es', 'en'], gpu=False)
-        result = reader.readtext(np.array(pil_img))
-        if result:
-            confidences = [item[2] for item in result if len(item) >= 3]
-            if confidences:
-                ocr_confidence = np.mean(confidences)
-    except Exception:
-        pass
+    reader = _get_ocr_reader(['es', 'en'])
+    if reader:
+        try:
+            result = reader.readtext(np.array(pil_img))
+            if result:
+                confidences = [item[2] for item in result if len(item) >= 3]
+                if confidences:
+                    ocr_confidence = np.mean(confidences)
+        except Exception:
+            pass
     return {"ocr_confidence": float(ocr_confidence)}
-
-
-def calculate_fraud_score(features: Dict[str, float], capture_meta: Dict = None) -> Tuple[float, List[str]]:
-    signals = []
-    score = 0.0
-    ela_norm = min(features.get("ela_score", 0) / 50.0, 1.0)
-    score += WEIGHTS["ela"] * 100 * ela_norm
-    if ela_norm > 0.5:
-        signals.append(f"ELA anomalia alta ({features.get('ela_score', 0):.1f})")
-    moire_norm = min(features.get("moire_score", 0) / 15.0, 1.0)
-    score += WEIGHTS["moire"] * 100 * moire_norm
-    if moire_norm > 0.5:
-        signals.append(f"Posible screen capture (Moire: {features.get('moire_score', 0):.1f})")
-    dct_norm = min(features.get("dct_score", 0) / 2.0, 1.0)
-    score += WEIGHTS["dct"] * 100 * dct_norm
-    blur_norm = 1.0 - min(features.get("blur_score", 0) / 300.0, 1.0)
-    score += WEIGHTS["blur"] * 100 * blur_norm
-    if blur_norm > 0.5:
-        signals.append(f"Blur bajo ({features.get('blur_score', 0):.1f})")
-    ocr_norm = 1.0 - features.get("ocr_confidence", 0)
-    score += WEIGHTS["ocr"] * 100 * ocr_norm
-    if ocr_norm > 0.45:
-        signals.append(f"OCR confidence baja ({features.get('ocr_confidence', 0):.2f})")
-    reflection_norm = min(features.get("reflection_score", 0) / 5.0, 1.0)
-    score += WEIGHTS["reflection"] * 100 * reflection_norm
-    if capture_meta:
-        if not capture_meta.get("liveness_passed", False):
-            score += 20
-            signals.append("Liveness check fallido")
-        if capture_meta.get("ip_risk_score", 0) > 0.7:
-            score += 10
-            signals.append(f"IP de alto riesgo ({capture_meta.get('ip_risk_score', 0):.2f})")
-        if capture_meta.get("emulator_detected", 0) == 1:
-            score += 5
-            signals.append("Emulador detectado")
-        if (capture_meta.get("tor_detected", 0) + capture_meta.get("vpn_detected", 0)) > 0:
-            score += 8
-            signals.append("Tor/VPN detectado")
-        if capture_meta.get("repeated_attempts", 0) >= 3:
-            score += 7
-            signals.append(f"Multiples intentos ({capture_meta.get('repeated_attempts', 0)})")
-    score = min(score, 100.0)
-    return score, signals
 
 
 def verify_document(base64_image: str, capture_meta: Dict = None) -> Dict:
@@ -161,12 +143,10 @@ def verify_document(base64_image: str, capture_meta: Dict = None) -> Dict:
         features = extract_all_features(bgr, gray, pil_img)
         del bgr, gray, pil_img
 
-        # Usar el nuevo motor de riesgo
         risk_result = calculate_risk_score(features, capture_meta)
 
         processing_ms = int((time.time() - start_time) * 1000)
 
-        # Convertir señales dict a lista de strings para compatibilidad
         signals_list = [f"{k}: {v:.2f}" for k, v in risk_result["signals"].items()]
 
         return {

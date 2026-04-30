@@ -3,18 +3,12 @@ import numpy as np
 import joblib
 import os
 from typing import Tuple, Dict, Any
-from sklearn.model_selection import StratifiedKFold, cross_val_predict
-from sklearn.metrics import roc_auc_score, average_precision_score, classification_report
+from sklearn.model_selection import StratifiedKFold, cross_val_predict, train_test_split
+from sklearn.metrics import roc_auc_score, average_precision_score, classification_report, recall_score, precision_score
 import xgboost as xgb
 import lightgbm as lgb
 
-FEATURE_COLS = [
-    "blur_score", "edge_density", "brightness", "contrast", 
-    "noise_ratio", "symmetry_score", "color_variance", "ela_score",
-    "moire_score", "dct_score", "reflection_score", "ocr_confidence",
-    "ip_risk_score", "emulator_detected", "tor_detected", 
-    "vpn_detected", "repeated_attempts", "liveness_passed"
-]
+from src.model.constants import FEATURE_COLS
 
 def train_xgboost(X: pd.DataFrame, y: pd.Series, params: Dict = None) -> xgb.XGBClassifier:
     """
@@ -71,37 +65,65 @@ def train_lightgbm(X: pd.DataFrame, y: pd.Series, params: Dict = None) -> lgb.LG
     model.fit(X[FEATURE_COLS], y)
     return model
 
-def evaluate_model(model, X: pd.DataFrame, y: pd.Series, cv: int = 5) -> Dict[str, float]:
+def evaluate_model(model, X_train: pd.DataFrame, y_train: pd.Series, 
+                  X_test: pd.DataFrame, y_test: pd.Series) -> Dict[str, float]:
     """
-    Evalúa el modelo usando StratifiedKFold y métricas PR-AUC, ROC-AUC.
+    Evalúa el modelo en un test set separado (no visto en entrenamiento).
 
     Args:
         model: Modelo entrenado.
-        X: Features.
-        y: Labels.
-        cv: Número de folds para cross-validation.
+        X_train: Features de entrenamiento.
+        y_train: Labels de entrenamiento.
+        X_test: Features de prueba.
+        y_test: Labels de prueba.
 
     Returns:
         Diccionario con métricas de evaluación.
     """
-    from sklearn.model_selection import cross_val_predict
-    from sklearn.metrics import roc_auc_score, average_precision_score, recall_score, precision_score
+    # Evaluar en train (para detectar overfitting)
+    y_train_pred_proba = model.predict_proba(X_train[FEATURE_COLS])[:, 1]
+    train_roc_auc = roc_auc_score(y_train, y_train_pred_proba)
+    train_pr_auc = average_precision_score(y_train, y_train_pred_proba)
     
-    skf = StratifiedKFold(n_splits=cv, shuffle=True, random_state=42)
-    y_pred_proba = cross_val_predict(model, X[FEATURE_COLS], y, cv=skf, method='predict_proba')[:, 1]
+    # Evaluar en test (métrica real)
+    y_test_pred_proba = model.predict_proba(X_test[FEATURE_COLS])[:, 1]
+    test_roc_auc = roc_auc_score(y_test, y_test_pred_proba)
+    test_pr_auc = average_precision_score(y_test, y_test_pred_proba)
     
-    roc_auc = roc_auc_score(y, y_pred_proba)
-    pr_auc = average_precision_score(y, y_pred_proba)
-    
-    y_pred = (y_pred_proba >= 0.5).astype(int)
-    recall = recall_score(y, y_pred)
-    precision = precision_score(y, y_pred)
+    y_test_pred = (y_test_pred_proba >= 0.5).astype(int)
+    from sklearn.metrics import recall_score, precision_score
+    recall = recall_score(y_test, y_test_pred)
+    precision = precision_score(y_test, y_test_pred)
     
     return {
-        'ROC-AUC': roc_auc,
-        'PR-AUC': pr_auc,
+        'Train_ROC-AUC': train_roc_auc,
+        'Train_PR-AUC': train_pr_auc,
+        'Test_ROC-AUC': test_roc_auc,
+        'Test_PR-AUC': test_pr_auc,
         'Recall (fraud)': recall,
         'Precision (fraud)': precision
+    }
+
+def evaluate_on_test_set(model, X_test: pd.DataFrame, y_test: pd.Series) -> Dict[str, float]:
+    """
+    Evalúa el modelo en un conjunto de prueba separado (no visto en entrenamiento).
+    
+    Args:
+        model: Modelo entrenado.
+        X_test: Features de prueba.
+        y_test: Labels de prueba.
+    
+    Returns:
+        Diccionario con métricas en test set.
+    """
+    y_pred_proba = model.predict_proba(X_test[FEATURE_COLS])[:, 1]
+    
+    roc_auc = roc_auc_score(y_test, y_pred_proba)
+    pr_auc = average_precision_score(y_test, y_pred_proba)
+    
+    return {
+        'Test_ROC-AUC': roc_auc,
+        'Test_PR-AUC': pr_auc
     }
 
 def save_model(model, path: str = "models/docshield_model.pkl") -> None:
@@ -132,6 +154,7 @@ def load_model(path: str = "models/docshield_model.pkl"):
 
 if __name__ == "__main__":
     import argparse
+    from sklearn.model_selection import train_test_split
     
     parser = argparse.ArgumentParser(description='Entrenar modelo DocShield')
     parser.add_argument('--data', type=str, default='data/gold/dataset.parquet',
@@ -146,13 +169,19 @@ if __name__ == "__main__":
     print(f"Dataset cargado: {len(df)} muestras")
     print(f"Distribución de clases:\n{df['is_fraud'].value_counts()}")
     
-    if args.model == 'xgb':
-        model = train_xgboost(df, df['is_fraud'])
-    else:
-        model = train_lightgbm(df, df['is_fraud'])
+    # Split train/test
+    X = df[FEATURE_COLS]
+    y = df['is_fraud']
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
     
-    metrics = evaluate_model(model, df, df['is_fraud'])
-    print("\nMétricas de evaluación:")
+    if args.model == 'xgb':
+        model = train_xgboost(X_train, y_train)
+    else:
+        model = train_lightgbm(X_train, y_train)
+    
+    # Evaluar en test set (no visto)
+    metrics = evaluate_model(model, X_train, y_train, X_test, y_test)
+    print("\nMétricas de evaluación (Train/Test):")
     for k, v in metrics.items():
         print(f"  {k}: {v:.4f}")
     
