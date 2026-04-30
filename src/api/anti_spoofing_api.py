@@ -8,20 +8,10 @@ from PIL import Image
 import io
 
 from src.pipeline.anti_spoofing import detect_moire, analyze_dct_blocks, analyze_reflection
+from src.pipeline.risk_engine import calculate_risk_score
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-WEIGHTS = {
-    "ela": 0.25,
-    "moire": 0.30,
-    "dct": 0.15,
-    "blur": 0.10,
-    "ocr": 0.10,
-    "reflection": 0.10,
-}
-
-FRAUD_THRESHOLD = 35.0
 
 
 def decode_base64_image(base64_string: str) -> Tuple[np.ndarray, np.ndarray, Image.Image]:
@@ -170,15 +160,22 @@ def verify_document(base64_image: str, capture_meta: Dict = None) -> Dict:
     try:
         features = extract_all_features(bgr, gray, pil_img)
         del bgr, gray, pil_img
-        fraud_score, signals = calculate_fraud_score(features, capture_meta)
-        is_fraud = fraud_score > FRAUD_THRESHOLD
-        confidence = 1.0 - (fraud_score / 100.0)
+
+        # Usar el nuevo motor de riesgo
+        risk_result = calculate_risk_score(features, capture_meta)
+
         processing_ms = int((time.time() - start_time) * 1000)
+
+        # Convertir señales dict a lista de strings para compatibilidad
+        signals_list = [f"{k}: {v:.2f}" for k, v in risk_result["signals"].items()]
+
         return {
-            "fraud_score": float(fraud_score),
-            "is_fraud": bool(is_fraud),
-            "signals": signals,
-            "confidence": float(confidence),
+            "is_fraud": risk_result["is_fraud"],
+            "confidence": risk_result["confidence"],
+            "risk_score": risk_result["risk_score"],
+            "risk_level": risk_result["risk_level"],
+            "signals": signals_list,
+            "signal_details": risk_result["signals"],
             "processing_ms": processing_ms,
             "features": features
         }

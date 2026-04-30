@@ -33,10 +33,12 @@ class Signal(BaseModel):
 
 class VerifyDocumentResponse(BaseModel):
     """Response de verificación de documento."""
-    fraud_score: float = Field(..., description="Score de fraude (0-100)")
     is_fraud: bool = Field(..., description="Si el documento es fraudulento")
-    signals: List[str] = Field(default_factory=list, description="Señales detectadas")
     confidence: float = Field(..., description="Confianza de la predicción (0-1)")
+    risk_score: float = Field(..., description="Score de riesgo (0-100)")
+    risk_level: str = Field(..., description="Nivel de riesgo: LOW, MEDIUM, HIGH")
+    signals: List[str] = Field(default_factory=list, description="Señales detectadas")
+    signal_details: Optional[Dict[str, float]] = None
     processing_ms: int = Field(..., description="Tiempo de procesamiento en ms")
     document_type: Optional[str] = None
     fraud_type: Optional[str] = None

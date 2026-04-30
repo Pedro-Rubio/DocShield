@@ -43,12 +43,13 @@ class TestVerifyDocumentEndpoint:
         assert response.status_code == 200
         
         data = response.json()
-        assert "fraud_score" in data
+        assert "risk_score" in data
         assert "is_fraud" in data
+        assert "risk_level" in data
         assert "signals" in data
         assert "confidence" in data
         assert "processing_ms" in data
-        assert isinstance(data["fraud_score"], (int, float))
+        assert isinstance(data["risk_score"], (int, float))
         assert isinstance(data["is_fraud"], bool)
     
     def test_verify_document_without_metadata(self):
